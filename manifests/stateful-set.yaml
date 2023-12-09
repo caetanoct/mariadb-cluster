@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mariadb-cluster
+  labels:
+    app: mariadb-cluster
+    component: database
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mariadb
+  serviceName: "mariadb"
+  template:
+    metadata:
+      labels:
+        app: mariadb
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - podAffinityTerm:
+                labelSelector:
+	                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - mariadb
+                topologyKey: kubernetes.io/hostname
+              weight: 50
+      initContainers:
+        - name: init
+          image: mariadb:11
+          command:
+            - 'bash'
+            - '-c'
+            - |
+              apt update
+              apt install dnsutils -y
+              cp /tmp/etc/mysql/conf.d/* /opt/shared
+              original_wsrep_cluster_address="wsrep_cluster_address=gcomm://mariadb-cluster-0.mariadb"
+              echo "Discovering Hosts"
+              for host in $(getent hosts mariadb | awk '{ print $1 }');
+              do
+                echo "Found Host $host"
+                dns_name=$(host $host | awk '{ print $5 }' | sed 's/.$//')
+                echo "$host is $dns_name"
+                modified_line="$original_wsrep_cluster_address,$dns_name"
+                sed -i "s|$original_wsrep_cluster_address|$modified_line|" /opt/shared/mariadb.cnf
+              done
+          volumeMounts:
+            - name: shared
+              mountPath: /opt/shared
+            - name: mariadb-custom-options
+              mountPath: /tmp/etc/mysql/conf.d
+      containers:
+        - env:
+            - name: MYSQL_ROOT_PASSWORD
+              value: caetano
+          name: mariadb
+          image: mariadb:11
+          command:
+            - 'bash'
+            - '-c'
+            - |
+              if hostname | grep -Eq '\-0$'; then
+                if [[ -f /var/lib/mysql/grastate.dat ]]; then
+                  echo "First host and grastate.dat exists, will try to join the cluster"
+                  exec /usr/local/bin/docker-entrypoint.sh mariadbd
+                else
+                  echo "First host and grastate.dat does not exist, will try to bootstrap the cluster"
+                  exec /usr/local/bin/docker-entrypoint.sh mariadbd --wsrep_new_cluster
+                fi
+              else
+                echo "Not first host, will join cluster"
+                exec /usr/local/bin/docker-entrypoint.sh mariadbd
+              fi
+          livenessProbe:
+            tcpSocket:
+              port: 3306
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: 3306
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          #resources
+          volumeMounts:
+            - name: db-storage
+              mountPath: /var/lib/mysql
+            - name: shared
+              mountPath: /etc/mysql/conf.d
+      volumes:
+        - name: shared
+          emptyDir: {}
+        - name: mariadb-custom-options
+          configMap:
+            name: mariadb-configuration
+  volumeClaimTemplates:
+    - metadata:
+        name: db-storage
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: 1Gi

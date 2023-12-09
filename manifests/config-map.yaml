@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mariadb-configuration
+  labels:
+    app: mariadb-cluster
+    component: database
+data:
+  mariadb.cnf: |
+    [mysqld]
+    port=3306
+
+    [mariadb]
+    user=mysql
+    bind-address=0.0.0.0
+    wsrep_provider=/usr/lib/libgalera_smm.so
+    binlog_format=ROW
+    default_storage_engine=InnoDB
+    innodb_autoinc_lock_mode=2
+    innodb_doublewrite=1
+    query_cache_size=0
+    wsrep_on=ON
+    wsrep_sst_method=rsync
+    wsrep_cluster_address=gcomm://mariadb-cluster-0.mariadb
